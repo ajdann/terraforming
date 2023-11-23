@@ -1,13 +1,13 @@
 provider "aws" {
-  region = "eu-central-1"
+  region = var.region
 }
 
-module "vpc" {
-  source = "./modules/vpc"
+# module "vpc" {
+#   source = "./modules/vpc"
 
-  # define variables for module
-  environment = var.environment
-}
+#   # define variables for module
+#   environment = var.environment
+# }
 
 # module "backend_state" {
 #   source = "./modules/remote_backend"
@@ -15,8 +15,27 @@ module "vpc" {
 #   environment = var.environment
 # }
 
-# module "eks" {
+module "eks" {
+  source = "./modules/eks"
 
-#   vpc_id = module.vpc.vpc_id #output of module.vpc
-  
-# }
+  environment  = var.environment
+  region       = var.region
+  cluster_name = "acheEKS"
+
+
+}
+
+module "helm-argocd" {
+  source                             = "./modules/helm"
+  cluster_endpoint                   = module.eks.cluster_endpoint
+  cluster_certificate_authority_data = module.eks.cluster_certificate_authority_data
+  cluster_name                       = module.eks.cluster_name
+
+}
+
+module "kubernetes" {
+  source                             = "./modules/kubernetes"
+  cluster_endpoint                   = module.eks.cluster_endpoint
+  cluster_certificate_authority_data = module.eks.cluster_certificate_authority_data
+  cluster_name                       = module.eks.cluster_name
+}

@@ -1,62 +1,22 @@
 terraform {
-  required_version = var.terraform_version
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "4.54.0"
+    }
+  }
 }
 
 provider "aws" {
-  version = var.aws_version
-  region  = var.region
-}
-
-data "aws_eks_cluster" "cluster" {
-  name = module.eks.cluster_id
-}
-
-data "aws_eks_cluster_auth" "cluster" {
-  name = module.eks.cluster_id
+  region = var.region
 }
 
 data "aws_availability_zones" "available" {
-
 }
-
-
-resource "aws_security_group" "worker_group_mgmt_one" {
-  name_prefix = "worker_group_mgmt_one"
-  vpc_id      = module.vpc.vpc_id # output of module.vpc
-
-  ingress {
-    from_port = 22
-    to_port   = 22
-    protocol  = "tcp"
-
-    cidr_blocks = [
-      "10.0.0.0/8",
-    ]
-  }
-}
-
-
-resource "aws_security_group" "all_worker_group_mgmt" {
-  name_prefix = "all_group_management"
-  vpc_id      = module.vpc.vpc_id # output of module.vpc
-
-  ingress {
-    from_port = 22
-    to_port   = 22
-    protocol  = "tcp"
-
-    cidr_blocks = [
-      "10.0.0.0/8",
-      "192.168.0.0/16",
-      "172.16.0.0/12"
-    ]
-  }
-}
-
 
 module "vpc" {
-
-  source = "terraform-aws-module/vpc/aws"
+  source  = "terraform-aws-modules/vpc/aws"
+  version = "3.19.0"
 
   name                 = "k8s vpc"
   cidr                 = "10.0.0.0/16"
@@ -68,37 +28,133 @@ module "vpc" {
   enable_dns_hostnames = true
 
   public_subnet_tags = {
-    "kubernetes.io/cluster/${var.cluster_name}" = "shared"
-    "kubernetes.io/role/elb"                    = "1"
+    "kubernetes.io/cluster/var.cluster_name" = "shared"
+    "kubernetes.io/role/elb"                 = "1"
   }
   private_subnet_tags = {
-    "kubernetes.io/cluster/${var.cluster_name}" = "shared"
-    "kubernetes.io/role/internal-elb"           = "1"
+    "kubernetes.io/cluster/var.cluster_name" = "shared"
+    "kubernetes.io/role/internal-elb"        = "1"
+  }
+  tags = {
+    environment = var.environment
   }
 }
 
-module "terraform-aws-eks" {
+module "eks" {
   source                          = "terraform-aws-modules/eks/aws"
+  version                         = "19.7.0"
   cluster_name                    = var.cluster_name
-  cluster_version                 = "1.19"
-  subnets                         = module.vpc.private_subnets
-  cluster_create_timeout          = "1h"
-  cluster_endpoint_private_access = true // allow private endpoints to connect to kubernetes and join cluster automatically
-  vpc_id                          = module.vpc.vpc_id
+  cluster_version                 = "1.24"
+  subnet_ids                      = module.vpc.private_subnets
+  cluster_endpoint_private_access = true
+  cluster_endpoint_public_access  = true
+  vpc_id                          = module.vpc.vpc_id #vpc to use
+  cluster_timeouts = {
+    "create" = "1h"
+  }
+  cluster_tags = {
+    environment = var.environment
+  }
 
-  worker_groups = [
-    {
-      name                          = "worker-group-1"
-      instance_type                 = "t2.small"
-      additional_userdata           = "echo foo bar"
-      asg_desired_capacity          = 1
-      additional_security_group_ids = [aws_security_group.worker_group_mgmt_one.id]
-    },
-  ]
-  worker_aadditional_security_group_ids = [aws_security_group.all_group_management.id]
-  map_roles                             = var.map_roles
-  map_users                             = var.map_users
-  map_accounts                          = var.map_accounts
+  eks_managed_node_groups = {
+    spot = {
+      desired_state = 1
+      min_size      = 1
+      max_size      = 2
+
+      labels = {
+        environment = var.environment
+
+      }
+      instance_types = ["t3.micro"]
+      capacity_type  = "SPOT"
+    }
+
+  }
 
 }
 
+module "iam_iam-policy" {
+  source  = "terraform-aws-modules/iam/aws//modules/iam-policy"
+  version = "5.11.1"
+
+  name = "allow-eks-access"
+  create_policy = true
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = [
+          "eks:DescribeCluster",
+        ]
+        Effect = "Allow"
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+# module "iam_iam-assumable-role" {
+#   source  = "terraform-aws-modules/iam/aws//modules/iam-assumable-role"
+#   version = "5.11.1"
+
+#   role_name = "eks-admin"
+#   create_role = true
+#   role_requires_mfa = false
+#   custom_role_policy_arns = [module.alloweks_access_iam_policy.arn]
+
+#   trusted_role_arns = [
+#     "arn:aws:iam::${module.vpc.vpc_owner_id}:root"
+#   ]
+# }
+
+
+
+
+# module "iam_iam-user" {
+#   source  = "terraform-aws-modules/iam/aws//modules/iam-user"
+#   version = "5.11.1"
+#   # insert the 1 required variable here
+#   name = "ajdin"
+#   create_iam_access_key = false
+#   create_iam_user_login_profile = false
+
+#   force_destroy = true
+# }
+
+
+
+# module "allow_assume_eks_admins_iam_policy" {
+#   source  = "terraform-aws-modules/iam/aws//modules/iam-policy"
+#   version = "5.11.1"
+
+#   name = "allow-assume-eks-admin-iam-role"
+#   create_policy = true
+
+#   policy = jsonencode({
+#     Version = "2012-10-17"
+#     Statement = [
+#       {
+#         Action = [
+#           "sts:AssumeRole",
+#         ]
+#         Effect = "Allow"
+#         Resource = module.eks_admins_iam_role.iam_role_arn
+#       }
+#     ]
+#   })
+# }
+
+
+# #create an IAM group with the policy
+# module "iam_example_iam-group-with-policies" {
+#   source  = "terraform-aws-modules/iam/aws//examples/iam-group-with-policies"
+#   version = "5.11.1"
+
+#   name = "eks-admin"
+#   attach_iam_self_management_policy = false
+#   create_group = true
+#   group_users = [module.iam_iam-user.iam_user_name]
+#   custom_group_policy_arns = [module.allow_assume_eks_admins_iam_policy.arn]
+# }
